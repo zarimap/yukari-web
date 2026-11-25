@@ -1,0 +1,1446 @@
+<!DOCTYPE html>
+<html lang="ja" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yukari Web — 緊急地震速報・津波警報モニター</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    body {
+      font-family: 'Inter', 'Noto Sans JP', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #0b1120;
+      color: #e2e8f0;
+    }
+    .pulse-ring {
+      animation: pulseRing 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+    }
+    @keyframes pulseRing {
+      0% { transform: scale(0.8); opacity: 0.9; }
+      100% { transform: scale(2.4); opacity: 0; }
+    }
+    .alert-flash {
+      animation: alertFlash 1.2s ease-in-out infinite;
+    }
+    @keyframes alertFlash {
+      0%, 100% { border-color: rgba(239, 68, 68, 0.9); box-shadow: 0 0 18px rgba(239, 68, 68, 0.35); }
+      50% { border-color: rgba(248, 113, 113, 0.4); box-shadow: 0 0 6px rgba(239, 68, 68, 0.15); }
+    }
+    /* Custom scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-purple-500/30">
+
+  <!-- Top Header -->
+  <header class="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-900/90 backdrop-blur-md">
+    <div class="max-w-7xl mx-auto px-3 sm:px-5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-purple-900/40 shrink-0">
+          <i data-lucide="radio" class="w-5 h-5 text-white"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-base sm:text-lg font-bold tracking-tight text-white leading-none">Yukari Web</h1>
+            <span id="dataSourceBadge" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span id="dataSourceText">初期化中...</span>
+            </span>
+          </div>
+          <p class="text-[11px] text-slate-400 hidden sm:block mt-0.5">緊急地震速報・NHK地震情報・津波警報リアルタイムモニター</p>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="flex items-center gap-1.5 sm:gap-2">
+        <button id="btnPollNow" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" title="最新情報を取得">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+          <span class="hidden md:inline">更新</span>
+          <span id="pollCountdown" class="text-[11px] text-slate-400 font-mono">30s</span>
+        </button>
+
+        <button id="btnMuteToggle" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" title="音声・アラート音のミュート切替">
+          <i id="iconMute" data-lucide="volume-2" class="w-3.5 h-3.5 text-purple-400"></i>
+          <span id="labelMute" class="hidden sm:inline">音声ON</span>
+        </button>
+
+        <button id="btnSimMenu" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white shadow-sm shadow-purple-900/40 transition">
+          <i data-lucide="zap" class="w-3.5 h-3.5"></i>
+          <span>速報テスト</span>
+        </button>
+
+        <button id="btnOpenSettings" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" title="設定 (%y config)">
+          <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i>
+          <span class="hidden sm:inline">設定</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Active EEW / Tsunami Banner (Hidden when idle) -->
+  <div id="activeAlertBanner" class="hidden border-b border-red-500/60 bg-gradient-to-r from-red-950/90 via-rose-950/90 to-red-950/90 px-4 py-2.5">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center gap-3">
+        <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-red-600 text-white animate-pulse shrink-0">
+          <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+        </span>
+        <div>
+          <div class="flex items-center gap-2">
+            <span id="bannerTag" class="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-red-600 text-white">緊急地震速報</span>
+            <span id="bannerTitle" class="text-sm sm:text-base font-bold text-white">震源地: 能登半島沖</span>
+          </div>
+          <p id="bannerSub" class="text-xs text-red-200 mt-0.5">経過時間: 0.0秒 | P波・S波到達予測を計算中...</p>
+        </div>
+      </div>
+      <button id="btnStopSim" class="px-3 py-1 rounded-lg text-xs font-medium bg-red-900/80 hover:bg-red-800 text-red-100 border border-red-500/40 transition">
+        警報表示を終了
+      </button>
+    </div>
+  </div>
+
+  <!-- Main Workspace -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-5 py-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+    <!-- Left Column: Map + Telemetry + Command Console -->
+    <section class="lg:col-span-7 flex flex-col gap-4">
+      <!-- Map Card -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/70 overflow-hidden flex flex-col shadow-xl">
+        <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-900/90">
+          <div class="flex items-center gap-2">
+            <i data-lucide="map" class="w-4 h-4 text-purple-400"></i>
+            <h2 class="text-sm font-semibold text-slate-100">強震・震央マップ</h2>
+            <span id="mapModeLabel" class="text-[11px] text-slate-400">— 日本周辺</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <button id="btnZoomIn" class="p-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="拡大">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            </button>
+            <button id="btnZoomOut" class="p-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="縮小">
+              <i data-lucide="minus" class="w-3.5 h-3.5"></i>
+            </button>
+            <button id="btnZoomReset" class="px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-slate-300 transition">
+              リセット
+            </button>
+          </div>
+        </div>
+
+        <!-- SVG Map Container -->
+        <div class="relative w-full h-[340px] sm:h-[420px] bg-[#070d1a]">
+          <svg id="japanMap" class="w-full h-full select-none"></svg>
+
+          <!-- Legend Overlay -->
+          <div class="absolute bottom-3 left-3 bg-slate-900/85 backdrop-blur-sm border border-slate-700/70 rounded-xl p-2.5 text-[11px] pointer-events-none">
+            <div class="font-semibold text-slate-300 mb-1.5">震度階級 / 波動</div>
+            <div class="flex flex-wrap gap-1.5 max-w-[230px]">
+              <span class="px-1.5 py-0.5 rounded bg-slate-700 text-slate-100">1-2</span>
+              <span class="px-1.5 py-0.5 rounded bg-emerald-600 text-white">3</span>
+              <span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-semibold">4</span>
+              <span class="px-1.5 py-0.5 rounded bg-orange-600 text-white font-semibold">5弱/強</span>
+              <span class="px-1.5 py-0.5 rounded bg-red-600 text-white font-bold">6弱/強</span>
+              <span class="px-1.5 py-0.5 rounded bg-purple-700 text-white font-bold">7</span>
+            </div>
+            <div class="flex items-center gap-3 mt-2 pt-1.5 border-t border-slate-700/60 text-slate-300">
+              <span class="inline-flex items-center gap-1"><span class="w-2.5 h-0.5 border-t-2 border-dashed border-cyan-400"></span>P波</span>
+              <span class="inline-flex items-center gap-1"><span class="w-2.5 h-0.5 bg-red-500"></span>S波</span>
+            </div>
+          </div>
+
+          <!-- Selected Event Floating Card -->
+          <div id="mapOverlayInfo" class="absolute top-3 right-3 max-w-[230px] bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-xl p-3 text-xs shadow-lg hidden sm:block">
+            <div class="text-[10px] uppercase tracking-wider text-purple-400 font-semibold">選択中の地震</div>
+            <div id="overlayEpicenter" class="text-sm font-bold text-white mt-0.5">—</div>
+            <div id="overlayMeta" class="text-[11px] text-slate-300 mt-1 space-y-0.5">
+              <div>時刻: —</div>
+              <div>規模: — / 深さ: —</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Arrival Countdown / Selected Event Detail Card -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div class="flex items-center gap-2">
+            <i data-lucide="activity" class="w-4 h-4 text-cyan-400"></i>
+            <h3 class="text-sm font-semibold text-white">詳細データ・主要都市への到達予測</h3>
+          </div>
+          <button id="btnSpeakSelected" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-600/20 hover:bg-purple-600/35 text-purple-300 border border-purple-500/30 transition">
+            <i data-lucide="volume-2" class="w-3.5 h-3.5"></i>
+            <span>ゆかりボイスで読み上げ</span>
+          </button>
+        </div>
+
+        <div id="selectedDetailGrid" class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3">
+          <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+            <div class="text-[11px] text-slate-400">震源地</div>
+            <div id="detEpicenter" class="text-sm font-bold text-white mt-0.5 truncate">—</div>
+          </div>
+          <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+            <div class="text-[11px] text-slate-400">最大震度</div>
+            <div id="detShindo" class="text-sm font-bold text-amber-400 mt-0.5">—</div>
+          </div>
+          <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+            <div class="text-[11px] text-slate-400">マグニチュード / 深さ</div>
+            <div id="detMagDepth" class="text-sm font-bold text-slate-100 mt-0.5">—</div>
+          </div>
+          <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+            <div class="text-[11px] text-slate-400">津波の心配</div>
+            <div id="detTsunami" class="text-sm font-bold text-emerald-400 mt-0.5 truncate">—</div>
+          </div>
+        </div>
+
+        <!-- City Arrival Distances -->
+        <div id="cityArrivalGrid" class="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center"></div>
+      </div>
+
+      <!-- Yukari Bot Command Console (%y) -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-3.5">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-2 text-xs font-semibold text-slate-300">
+            <i data-lucide="terminal" class="w-3.5 h-3.5 text-purple-400"></i>
+            <span>ボットコマンドコンソール（元の <code class="text-purple-300">%y</code> コマンド互換）</span>
+          </div>
+          <span class="text-[11px] text-slate-500">例: <code class="text-slate-400">%y test</code> / <code class="text-slate-400">%y config min_shindo 4</code></span>
+        </div>
+        <form id="cmdForm" class="flex gap-2">
+          <input id="cmdInput" type="text" placeholder="%y test | %y eew | %y tsunami | %y config min_shindo 3 | %y status | %y help"
+            class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-500" />
+          <button type="submit" class="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-semibold text-white transition shrink-0">
+            実行
+          </button>
+        </form>
+        <div id="cmdOutput" class="mt-2 text-xs font-mono text-slate-300 bg-slate-950/80 border border-slate-800/80 rounded-lg px-3 py-2 hidden whitespace-pre-wrap"></div>
+      </div>
+    </section>
+
+    <!-- Right Column: Discord-Style Alert Feed & TTS Voice Log -->
+    <section class="lg:col-span-5 flex flex-col gap-4">
+      <!-- Tabs -->
+      <div class="rounded-2xl border border-slate-800 bg-slate-900/70 flex flex-col flex-1 overflow-hidden">
+        <div class="px-3 pt-2.5 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
+          <div class="flex gap-1">
+            <button data-tab="feed" class="tab-btn px-3 py-2 text-xs font-semibold border-b-2 border-purple-500 text-white transition">
+              速報タイムライン
+              <span id="feedCountBadge" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-slate-800 text-slate-300">0</span>
+            </button>
+            <button data-tab="tts" class="tab-btn px-3 py-2 text-xs font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition">
+              音声読み上げログ
+              <span id="ttsCountBadge" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-slate-800 text-slate-300">0</span>
+            </button>
+          </div>
+          <div class="text-[11px] text-slate-400 pb-2 pr-1">
+            最小震度: <span id="activeMinShindoLabel" class="font-semibold text-purple-300">震度3</span>
+          </div>
+        </div>
+
+        <!-- Feed Panel -->
+        <div id="panelFeed" class="p-3 space-y-2.5 overflow-y-auto max-h-[600px]"></div>
+
+        <!-- TTS Log Panel -->
+        <div id="panelTts" class="p-3 space-y-2.5 overflow-y-auto max-h-[600px] hidden">
+          <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-3 text-xs text-slate-300">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-semibold text-purple-300 flex items-center gap-1.5">
+                <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+                ゆかり風 音声合成ステータス
+              </span>
+              <button id="btnTestVoicePanel" class="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-medium transition">
+                テスト再生
+              </button>
+            </div>
+            <p class="text-[11px] text-slate-400">ブラウザの Web Speech API（ja-JP）と Web Audio API チャイムを使用してリアルタイムに読み上げます。</p>
+          </div>
+          <div id="ttsLogList" class="space-y-2"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Simulation Picker Modal -->
+  <div id="simModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+    <div class="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="zap" class="w-4 h-4 text-purple-400"></i>
+          速報シミュレーション（テスト配信）
+        </h3>
+        <button id="btnCloseSimModal" class="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <p class="text-xs text-slate-400 mb-4">実際のチャイム音、P波・S波マップアニメーション、音声読み上げの動作をテストできます。</p>
+      <div class="space-y-2.5">
+        <button id="btnSimEew" class="w-full text-left p-3 rounded-xl border border-red-500/40 bg-red-950/30 hover:bg-red-950/60 transition flex items-center justify-between">
+          <div>
+            <div class="text-sm font-bold text-red-300">緊急地震速報（NIED初報）</div>
+            <div class="text-xs text-slate-400 mt-0.5">能登半島沖 M6.5 最大震度6強 — P波/S波アニメーション</div>
+          </div>
+          <i data-lucide="play" class="w-4 h-4 text-red-400 shrink-0"></i>
+        </button>
+        <button id="btnSimNhk" class="w-full text-left p-3 rounded-xl border border-amber-500/40 bg-amber-950/30 hover:bg-amber-950/60 transition flex items-center justify-between">
+          <div>
+            <div class="text-sm font-bold text-amber-300">NHK地震情報（震度速報）</div>
+            <div class="text-xs text-slate-400 mt-0.5">三陸沖 Mw7.4 最大震度5強 — 津波注意報あり</div>
+          </div>
+          <i data-lucide="play" class="w-4 h-4 text-amber-400 shrink-0"></i>
+        </button>
+        <button id="btnSimTsunami" class="w-full text-left p-3 rounded-xl border border-cyan-500/40 bg-cyan-950/30 hover:bg-cyan-950/60 transition flex items-center justify-between">
+          <div>
+            <div class="text-sm font-bold text-cyan-300">津波警報サイレンテスト</div>
+            <div class="text-xs text-slate-400 mt-0.5">青森県東方沖 Mw7.4 — 津波警報発令アラート</div>
+          </div>
+          <i data-lucide="play" class="w-4 h-4 text-cyan-400 shrink-0"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal (%y config) -->
+  <div id="settingsModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+    <div class="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="sliders-horizontal" class="w-4 h-4 text-purple-400"></i>
+          Yukari 設定（<code class="text-xs text-purple-300">%y config</code>）
+        </h3>
+        <button id="btnCloseSettings" class="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="space-y-4 text-xs">
+        <!-- Sources -->
+        <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-3.5 space-y-2.5">
+          <div class="font-semibold text-slate-200">監視ソース</div>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-slate-300"><code>use_nied</code> — 緊急地震速報 (EEW)</span>
+            <input id="cfgUseNied" type="checkbox" class="accent-purple-500 w-4 h-4" />
+          </label>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-slate-300"><code>use_nhk</code> — 地震情報（P2P/NHK相当）</span>
+            <input id="cfgUseNhk" type="checkbox" class="accent-purple-500 w-4 h-4" />
+          </label>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-slate-300"><code>use_tsunami</code> — 津波警報・注意報</span>
+            <input id="cfgUseTsunami" type="checkbox" class="accent-purple-500 w-4 h-4" />
+          </label>
+        </div>
+
+        <!-- Thresholds -->
+        <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-3.5 space-y-3">
+          <div class="font-semibold text-slate-200">通知フィルタ</div>
+          <div>
+            <div class="flex justify-between mb-1">
+              <span class="text-slate-300"><code>min_shindo</code> — 通知する最小震度</span>
+              <span id="cfgMinShindoVal" class="font-bold text-purple-300">震度3</span>
+            </div>
+            <input id="cfgMinShindo" type="range" min="1" max="7" step="1" class="w-full accent-purple-500" />
+          </div>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-slate-300"><code>ignore_unknown</code> — 震度不明を無視する</span>
+            <input id="cfgIgnoreUnknown" type="checkbox" class="accent-purple-500 w-4 h-4" />
+          </label>
+          <div class="flex items-center justify-between">
+            <span class="text-slate-300">自動更新間隔</span>
+            <select id="cfgPollInterval" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-slate-200">
+              <option value="10">10秒</option>
+              <option value="30">30秒</option>
+              <option value="60">60秒</option>
+              <option value="0">手動のみ</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Voice & Output -->
+        <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-3.5 space-y-3">
+          <div class="font-semibold text-slate-200">テキスト・音声通知</div>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-slate-300"><code>use_text</code> — トースト／ブラウザ通知</span>
+            <input id="cfgUseText" type="checkbox" class="accent-purple-500 w-4 h-4" />
+          </label>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-slate-300"><code>use_voice</code> — ゆかり風 音声読み上げ (TTS)</span>
+            <input id="cfgUseVoice" type="checkbox" class="accent-purple-500 w-4 h-4" />
+          </label>
+          <div>
+            <div class="flex justify-between mb-1">
+              <span class="text-slate-300">声の高さ（Pitch）</span>
+              <span id="cfgPitchVal" class="font-mono text-slate-300">1.15</span>
+            </div>
+            <input id="cfgVoicePitch" type="range" min="0.7" max="1.6" step="0.05" class="w-full accent-purple-500" />
+          </div>
+          <div>
+            <div class="flex justify-between mb-1">
+              <span class="text-slate-300">話速（Rate）</span>
+              <span id="cfgRateVal" class="font-mono text-slate-300">1.05</span>
+            </div>
+            <input id="cfgVoiceRate" type="range" min="0.7" max="1.5" step="0.05" class="w-full accent-purple-500" />
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-4 flex justify-end gap-2">
+        <button id="btnResetSettings" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 transition">
+          初期値に戻す
+        </button>
+        <button id="btnSaveSettings" class="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-semibold text-white transition">
+          保存して閉じる
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm pointer-events-none"></div>
+
+  <script>
+    // =========================================================================
+    // Grounded Fallback & Simulation Dataset (Sourced from JMA & Yahoo! Weather)
+    // =========================================================================
+    const SAMPLE_EVENTS = [
+      {
+        id: 'jma-20260420',
+        type: 'nhk',
+        time: '2026/04/20 16:52',
+        epicenter: '三陸沖',
+        lat: 39.84,
+        lng: 143.16,
+        magnitude: '7.4',
+        depth: '30 km',
+        maxShindo: 5.5,
+        shindoLabel: '5強',
+        tsunami: '津波注意報（影響調査中）',
+        areas: ['岩手県沿岸北部', '岩手県沿岸南部', '宮城県北部', '青森県三八上北']
+      },
+      {
+        id: 'jma-20251208',
+        type: 'nhk',
+        time: '2025/12/08 23:15',
+        epicenter: '青森県東方沖',
+        lat: 40.97,
+        lng: 142.29,
+        magnitude: '7.4',
+        depth: '40 km',
+        maxShindo: 5.0,
+        shindoLabel: '5弱',
+        tsunami: '津波警報（沿岸部は避難）',
+        areas: ['青森県三八上北', '青森県下北', '北海道渡島東部', '岩手県沿岸北部']
+      },
+      {
+        id: 'jma-20250113',
+        type: 'nhk',
+        time: '2025/01/13 21:19',
+        epicenter: '日向灘',
+        lat: 31.83,
+        lng: 131.57,
+        magnitude: '6.7',
+        depth: '30 km',
+        maxShindo: 5.0,
+        shindoLabel: '5弱',
+        tsunami: '津波注意報（宮崎・高知）',
+        areas: ['宮崎県南部平野部', '宮崎県北部平野部', '鹿児島県大隅']
+      },
+      {
+        id: 'jma-20230505',
+        type: 'nhk',
+        time: '2023/05/05 14:42',
+        epicenter: '能登半島沖',
+        lat: 37.54,
+        lng: 137.31,
+        magnitude: '6.5',
+        depth: '12 km',
+        maxShindo: 6.5,
+        shindoLabel: '6強',
+        tsunami: '若干の海面変動（被害なし）',
+        areas: ['石川県能登', '石川県加賀', '富山県東部', '新潟県上越']
+      },
+      {
+        id: 'jma-20220316',
+        type: 'nhk',
+        time: '2022/03/16 23:36',
+        epicenter: '福島県沖',
+        lat: 37.70,
+        lng: 141.62,
+        magnitude: '7.4',
+        depth: '57 km',
+        maxShindo: 6.5,
+        shindoLabel: '6強',
+        tsunami: '津波注意報（宮城・福島）',
+        areas: ['宮城県南部', '福島県中通り', '福島県浜通り', '岩手県沿岸南部']
+      },
+      {
+        id: 'jma-20260728',
+        type: 'nhk',
+        time: '2026/07/28 16:27',
+        epicenter: '熊本県熊本地方',
+        lat: 32.63,
+        lng: 130.68,
+        magnitude: '5.0',
+        depth: '10 km',
+        maxShindo: 4.0,
+        shindoLabel: '4',
+        tsunami: '津波の心配なし',
+        areas: ['熊本県熊本', '熊本県阿蘇', '熊本県天草・芦北']
+      }
+    ];
+
+    const MAJOR_CITIES = [
+      { name: '札幌', lat: 43.06, lng: 141.35 },
+      { name: '仙台', lat: 38.27, lng: 140.87 },
+      { name: '東京', lat: 35.68, lng: 139.77 },
+      { name: '名古屋', lat: 35.18, lng: 136.91 },
+      { name: '大阪', lat: 34.69, lng: 135.50 },
+      { name: '福岡', lat: 33.59, lng: 130.40 }
+    ];
+
+    // =========================================================================
+    // Application State
+    // =========================================================================
+    const DEFAULT_CONFIG = {
+      use_nied: true,
+      use_nhk: true,
+      use_tsunami: true,
+      min_shindo: 3,
+      ignore_unknown: true,
+      use_text: true,
+      use_voice: true,
+      voice_pitch: 1.15,
+      voice_rate: 1.05,
+      poll_interval: 30,
+      muted: false
+    };
+
+    const state = {
+      config: { ...DEFAULT_CONFIG },
+      events: [...SAMPLE_EVENTS],
+      selectedId: SAMPLE_EVENTS[0].id,
+      dataMode: 'sample', // 'live' | 'sample'
+      countdown: 30,
+      pollTimer: null,
+      simTimer: null,
+      simState: null, // { event, startTime, elapsedSec }
+      ttsLogs: [],
+      seenIds: new Set(),
+      audioCtx: null
+    };
+
+    // Load saved config safely
+    try {
+      const saved = localStorage.getItem('yukari_web_config');
+      if (saved) {
+        state.config = { ...DEFAULT_CONFIG, ...JSON.parse(saved) };
+      }
+    } catch (e) { /* ignore storage restrictions */ }
+
+    state.countdown = state.config.poll_interval || 30;
+
+    // =========================================================================
+    // Helpers: Shindo Mapping, Distance & Formatting
+    // =========================================================================
+    function shindoColor(val) {
+      if (val >= 7) return { bg: 'bg-purple-700', text: 'text-white', border: 'border-purple-500', hex: '#7e22ce' };
+      if (val >= 6) return { bg: 'bg-red-600', text: 'text-white', border: 'border-red-500', hex: '#dc2626' };
+      if (val >= 5) return { bg: 'bg-orange-600', text: 'text-white', border: 'border-orange-500', hex: '#ea580c' };
+      if (val >= 4) return { bg: 'bg-amber-500', text: 'text-slate-950', border: 'border-amber-400', hex: '#f59e0b' };
+      if (val >= 3) return { bg: 'bg-emerald-600', text: 'text-white', border: 'border-emerald-500', hex: '#059669' };
+      if (val >= 1) return { bg: 'bg-slate-700', text: 'text-slate-100', border: 'border-slate-500', hex: '#475569' };
+      return { bg: 'bg-slate-800', text: 'text-slate-400', border: 'border-slate-600', hex: '#334155' };
+    }
+
+    function parseP2PScale(scale) {
+      const map = {
+        10: [1, '1'], 20: [2, '2'], 30: [3, '3'], 40: [4, '4'],
+        45: [5, '5弱'], 50: [5.5, '5強'], 55: [6, '6弱'], 60: [6.5, '6強'], 70: [7, '7']
+      };
+      return map[scale] || [0, '不明'];
+    }
+
+    function haversineKm(lat1, lng1, lat2, lng2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function saveConfig() {
+      try {
+        localStorage.setItem('yukari_web_config', JSON.stringify(state.config));
+      } catch (e) { /* ignore */ }
+    }
+
+    function showToast(title, message, variant = 'info') {
+      const container = document.getElementById('toastContainer');
+      const colors = {
+        info: 'border-slate-700 bg-slate-900/95 text-slate-100',
+        success: 'border-emerald-500/50 bg-emerald-950/90 text-emerald-100',
+        warn: 'border-amber-500/50 bg-amber-950/90 text-amber-100',
+        danger: 'border-red-500/60 bg-red-950/95 text-red-100'
+      };
+      const el = document.createElement('div');
+      el.className = `pointer-events-auto rounded-xl border px-3.5 py-2.5 shadow-xl backdrop-blur-md text-xs transition-all duration-300 ${colors[variant] || colors.info}`;
+      el.innerHTML = `<div class="font-bold">${escapeHtml(title)}</div><div class="text-[11px] opacity-90 mt-0.5">${escapeHtml(message)}</div>`;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 300);
+      }, 4200);
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
+    }
+
+    // =========================================================================
+    // Web Audio Synthesizer (assets/*.mp3 equivalent) & Web Speech API
+    // =========================================================================
+    function ensureAudioCtx() {
+      if (!state.audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext) state.audioCtx = new AudioContext();
+      }
+      if (state.audioCtx && state.audioCtx.state === 'suspended') {
+        state.audioCtx.resume().catch(() => {});
+      }
+      return state.audioCtx;
+    }
+
+    function playAlertSound(kind) {
+      if (state.config.muted) return;
+      const ctx = ensureAudioCtx();
+      if (!ctx) return;
+
+      const now = ctx.currentTime;
+      const playTone = (freq, start, dur, type = 'sine', gainVal = 0.16) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, now + start);
+        gain.gain.setValueAtTime(0.001, now + start);
+        gain.gain.exponentialRampToValueAtTime(gainVal, now + start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + start + dur);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + start);
+        osc.stop(now + start + dur + 0.02);
+      };
+
+      if (kind === 'nied_start' || kind === 'nied_rise') {
+        // Two-tone urgent EEW chime
+        for (let i = 0; i < 2; i++) {
+          const offset = i * 0.52;
+          playTone(880, offset, 0.22, 'triangle', 0.2);
+          playTone(660, offset + 0.23, 0.24, 'triangle', 0.2);
+        }
+      } else if (kind === 'tsunami') {
+        // Rising siren sweep
+        for (let i = 0; i < 2; i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sawtooth';
+          const s = now + i * 0.7;
+          osc.frequency.setValueAtTime(420, s);
+          osc.frequency.linearRampToValueAtTime(860, s + 0.35);
+          osc.frequency.linearRampToValueAtTime(420, s + 0.65);
+          gain.gain.setValueAtTime(0.08, s);
+          gain.gain.exponentialRampToValueAtTime(0.001, s + 0.66);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(s);
+          osc.stop(s + 0.68);
+        }
+      } else if (kind === 'nhk') {
+        playTone(587.33, 0, 0.18, 'sine', 0.16);
+        playTone(880, 0.19, 0.28, 'sine', 0.16);
+      } else {
+        // test
+        playTone(523.25, 0, 0.14, 'sine', 0.15);
+        playTone(659.25, 0.15, 0.14, 'sine', 0.15);
+        playTone(783.99, 0.30, 0.24, 'sine', 0.15);
+      }
+    }
+
+    function speakYukari(text, soundKind = null) {
+      if (soundKind) playAlertSound(soundKind);
+
+      const logEntry = {
+        time: new Date().toLocaleTimeString('ja-JP'),
+        text,
+        spoken: state.config.use_voice && !state.config.muted
+      };
+      state.ttsLogs.unshift(logEntry);
+      if (state.ttsLogs.length > 30) state.ttsLogs.pop();
+      renderTtsLogs();
+
+      if (!state.config.use_voice || state.config.muted) return;
+      if (!('speechSynthesis' in window)) return;
+
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.lang = 'ja-JP';
+        utter.pitch = state.config.voice_pitch;
+        utter.rate = state.config.voice_rate;
+        const voices = window.speechSynthesis.getVoices();
+        const jpVoice = voices.find(v => v.lang && v.lang.startsWith('ja'));
+        if (jpVoice) utter.voice = jpVoice;
+        const delay = soundKind ? 950 : 50;
+        setTimeout(() => {
+          try { window.speechSynthesis.speak(utter); } catch (e) {}
+        }, delay);
+      } catch (e) { /* ignore speech errors */ }
+    }
+
+    // =========================================================================
+    // D3 Vector Map (Japan) & Wavefront Animation
+    // =========================================================================
+    let mapSvg, mapG, waveG, markerG, cityG, projection, pathGen, zoomBehavior;
+    let worldLoaded = false;
+
+    async function initMap() {
+      const container = document.getElementById('japanMap');
+      const width = container.clientWidth || 640;
+      const height = container.clientHeight || 420;
+
+      mapSvg = d3.select('#japanMap').attr('viewBox', `0 0 ${width} ${height}`);
+      mapSvg.selectAll('*').remove();
+
+      projection = d3.geoMercator()
+        .center([137.2, 35.8])
+        .scale(Math.min(width, height) * 2.65)
+        .translate([width / 2, height / 2]);
+
+      pathGen = d3.geoPath().projection(projection);
+
+      mapG = mapSvg.append('g');
+      const landG = mapG.append('g');
+      const gridG = mapG.append('g');
+      waveG = mapG.append('g');
+      cityG = mapG.append('g');
+      markerG = mapG.append('g');
+
+      // Graticule grid
+      const graticule = d3.geoGraticule().step([5, 5]);
+      gridG.append('path')
+        .datum(graticule())
+        .attr('d', pathGen)
+        .attr('fill', 'none')
+        .attr('stroke', '#1e293b')
+        .attr('stroke-width', 0.6)
+        .attr('stroke-dasharray', '2,2');
+
+      zoomBehavior = d3.zoom()
+        .scaleExtent([0.7, 12])
+        .on('zoom', (event) => {
+          mapG.attr('transform', event.transform);
+        });
+      mapSvg.call(zoomBehavior);
+
+      // Load World Atlas TopoJSON (public jsDelivr CDN)
+      try {
+        const res = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-50m.json');
+        if (!res.ok) throw new Error('Map fetch failed');
+        const topo = await res.json();
+        const countries = topojson.feature(topo, topo.objects.countries);
+
+        landG.selectAll('path')
+          .data(countries.features)
+          .enter()
+          .append('path')
+          .attr('d', pathGen)
+          .attr('fill', d => String(d.id) === '392' ? '#1e293b' : '#0f172a')
+          .attr('stroke', d => String(d.id) === '392' ? '#475569' : '#1e293b')
+          .attr('stroke-width', d => String(d.id) === '392' ? 1.1 : 0.6);
+
+        worldLoaded = true;
+      } catch (e) {
+        // Fallback label if CDN is unreachable
+        landG.append('text')
+          .attr('x', 16).attr('y', 26)
+          .attr('fill', '#64748b')
+          .attr('font-size', '11px')
+          .text('地図タイル読込待機中（主要都市座標プロット表示）');
+      }
+
+      // Major cities
+      cityG.selectAll('g')
+        .data(MAJOR_CITIES)
+        .enter()
+        .append('g')
+        .attr('transform', d => {
+          const p = projection([d.lng, d.lat]);
+          return `translate(${p[0]}, ${p[1]})`;
+        })
+        .each(function(d) {
+          const g = d3.select(this);
+          g.append('circle').attr('r', 2.5).attr('fill', '#94a3b8');
+          g.append('text')
+            .attr('x', 5).attr('y', 3)
+            .attr('fill', '#94a3b8')
+            .attr('font-size', '10px')
+            .text(d.name);
+        });
+
+      renderMapMarkers();
+    }
+
+    function renderMapMarkers() {
+      if (!markerG || !projection) return;
+      markerG.selectAll('*').remove();
+
+      const filtered = getFilteredEvents();
+      filtered.slice().reverse().forEach(ev => {
+        if (ev.lat == null || ev.lng == null) return;
+        const coords = projection([ev.lng, ev.lat]);
+        if (!coords) return;
+        const isSelected = ev.id === state.selectedId;
+        const col = shindoColor(ev.maxShindo);
+
+        const g = markerG.append('g')
+          .attr('transform', `translate(${coords[0]}, ${coords[1]})`)
+          .style('cursor', 'pointer')
+          .on('click', () => selectEvent(ev.id));
+
+        if (isSelected) {
+          g.append('circle')
+            .attr('r', 14)
+            .attr('fill', col.hex)
+            .attr('fill-opacity', 0.25)
+            .attr('stroke', col.hex)
+            .attr('stroke-width', 1.5);
+        }
+
+        // Crosshair 'X' for epicenter or circle
+        g.append('circle')
+          .attr('r', isSelected ? 6.5 : 4.5)
+          .attr('fill', col.hex)
+          .attr('stroke', '#ffffff')
+          .attr('stroke-width', isSelected ? 1.8 : 1);
+      });
+    }
+
+    function renderWavefronts() {
+      if (!waveG || !projection) return;
+      waveG.selectAll('*').remove();
+      if (!state.simState) return;
+
+      const { event, elapsedSec } = state.simState;
+      const center = projection([event.lng, event.lat]);
+      if (!center) return;
+
+      // Approximate km -> map pixels at Japan latitude (~37N)
+      const pRef = projection([event.lng + 1, event.lat]);
+      const pxPerDegLng = Math.abs(pRef[0] - center[0]);
+      const kmPerDegLng = 111.32 * Math.cos(event.lat * Math.PI / 180);
+      const pxPerKm = pxPerDegLng / kmPerDegLng;
+
+      const pRadiusKm = elapsedSec * 7.0; // P-wave ~ 7 km/s
+      const sRadiusKm = elapsedSec * 4.0; // S-wave ~ 4 km/s
+
+      // S-wave filled circle
+      waveG.append('circle')
+        .attr('cx', center[0])
+        .attr('cy', center[1])
+        .attr('r', Math.max(0, sRadiusKm * pxPerKm))
+        .attr('fill', 'rgba(239, 68, 68, 0.16)')
+        .attr('stroke', '#ef4444')
+        .attr('stroke-width', 2);
+
+      // P-wave dashed circle
+      waveG.append('circle')
+        .attr('cx', center[0])
+        .attr('cy', center[1])
+        .attr('r', Math.max(0, pRadiusKm * pxPerKm))
+        .attr('fill', 'none')
+        .attr('stroke', '#22d3ee')
+        .attr('stroke-width', 1.8)
+        .attr('stroke-dasharray', '5,4');
+    }
+
+    // =========================================================================
+    // Live Data Polling (P2PQuake API v2, CORS-enabled public endpoint)
+    // =========================================================================
+    async function fetchLiveEarthquakes(manual = false) {
+      const badgeText = document.getElementById('dataSourceText');
+      try {
+        const res = await fetch('https://api.p2pquake.net/v2/history?codes=551&limit=15');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) throw new Error('Empty payload');
+
+        const parsed = data
+          .filter(item => item.earthquake && item.earthquake.hypocenter)
+          .map(item => {
+            const eq = item.earthquake;
+            const hypo = eq.hypocenter;
+            const [shindoNum, shindoLbl] = parseP2PScale(eq.maxScale);
+            const areas = Array.isArray(item.points)
+              ? [...new Set(item.points.map(p => p.pref))].slice(0, 6)
+              : [];
+            const tsunamiMap = {
+              None: '津波の心配なし',
+              Unknown: '不明',
+              Checking: '調査中',
+              NonEffective: '若干の海面変動',
+              Watch: '津波注意報',
+              Warning: '津波警報'
+            };
+            return {
+              id: item.id || `${eq.time}-${hypo.name}`,
+              type: 'nhk',
+              time: eq.time || item.time || '—',
+              epicenter: hypo.name || '震源地不明',
+              lat: hypo.latitude !== -200 ? hypo.latitude : null,
+              lng: hypo.longitude !== -200 ? hypo.longitude : null,
+              magnitude: hypo.magnitude !== -1 ? Number(hypo.magnitude).toFixed(1) : '不明',
+              depth: hypo.depth !== -1 ? `${hypo.depth} km` : '不明',
+              maxShindo: shindoNum,
+              shindoLabel: shindoLbl,
+              tsunami: tsunamiMap[eq.domesticTsunami] || '情報なし',
+              areas
+            };
+          });
+
+        if (parsed.length > 0) {
+          // Check for brand-new earthquake above min_shindo
+          const newest = parsed[0];
+          if (state.dataMode === 'live' && !state.seenIds.has(newest.id)) {
+            if (newest.maxShindo >= state.config.min_shindo) {
+              speakYukari(
+                `地震情報です。${newest.epicenter}を震源とする地震が発生しました。最大震度は${newest.shindoLabel}、マグニチュードは${newest.magnitude}です。${newest.tsunami}。`,
+                'nhk'
+              );
+              if (state.config.use_text) {
+                showToast(`地震情報: ${newest.epicenter}`, `最大震度 ${newest.shindoLabel} / M${newest.magnitude}`, 'warn');
+              }
+            }
+          }
+          parsed.forEach(p => state.seenIds.add(p.id));
+          state.events = parsed;
+          state.dataMode = 'live';
+          if (!parsed.some(e => e.id === state.selectedId)) {
+            state.selectedId = parsed[0].id;
+          }
+          badgeText.textContent = 'LIVE: P2P地震情報';
+          if (manual) showToast('更新完了', '最新の地震情報を取得しました。', 'success');
+        }
+      } catch (err) {
+        state.dataMode = 'sample';
+        badgeText.textContent = 'サンプルデータ表示中';
+        if (manual) {
+          showToast('オフライン / サンプル表示', 'ライブAPIに接続できないため気象庁サンプルデータを表示しています。', 'info');
+        }
+      }
+
+      renderAll();
+    }
+
+    // =========================================================================
+    // Simulation Engine (%y test / eew / tsunami)
+    // =========================================================================
+    function startSimulation(kind) {
+      stopSimulation();
+      ensureAudioCtx();
+
+      let simEvent;
+      let speechMsg;
+      let soundKind;
+      let bannerTag;
+
+      if (kind === 'eew') {
+        simEvent = {
+          id: `sim-eew-${Date.now()}`,
+          type: 'nied',
+          time: new Date().toLocaleString('ja-JP'),
+          epicenter: '能登半島沖（テスト速報）',
+          lat: 37.54,
+          lng: 137.31,
+          magnitude: '6.5',
+          depth: '12 km',
+          maxShindo: 6.5,
+          shindoLabel: '6強',
+          tsunami: '津波の有無を調査中',
+          areas: ['石川県能登', '石川県加賀', '富山県東部', '新潟県上越']
+        };
+        soundKind = 'nied_start';
+        bannerTag = '緊急地震速報 (テスト)';
+        speechMsg = '緊急地震速報です。能登半島沖で地震が発生しました。強い揺れに警戒してください。予想最大震度は6強です。';
+      } else if (kind === 'tsunami') {
+        simEvent = {
+          id: `sim-tsunami-${Date.now()}`,
+          type: 'tsunami',
+          time: new Date().toLocaleString('ja-JP'),
+          epicenter: '青森県東方沖（テスト警報）',
+          lat: 40.97,
+          lng: 142.29,
+          magnitude: '7.4',
+          depth: '40 km',
+          maxShindo: 5.0,
+          shindoLabel: '5弱',
+          tsunami: '津波警報発令（ただちに避難）',
+          areas: ['青森県太平洋沿岸', '岩手県沿岸', '北海道太平洋沿岸中部']
+        };
+        soundKind = 'tsunami';
+        bannerTag = '津波警報 (テスト)';
+        speechMsg = '津波警報が発表されました。青森県太平洋沿岸、岩手県沿岸では、ただちに高台へ避難してください。';
+      } else {
+        simEvent = {
+          id: `sim-nhk-${Date.now()}`,
+          type: 'nhk',
+          time: new Date().toLocaleString('ja-JP'),
+          epicenter: '三陸沖（テスト速報）',
+          lat: 39.84,
+          lng: 143.16,
+          magnitude: '7.4',
+          depth: '30 km',
+          maxShindo: 5.5,
+          shindoLabel: '5強',
+          tsunami: '津波注意報（沿岸部に近づかないでください）',
+          areas: ['岩手県沿岸北部', '岩手県沿岸南部', '宮城県北部']
+        };
+        soundKind = 'nhk';
+        bannerTag = '地震情報 (テスト)';
+        speechMsg = '地震情報です。三陸沖を震源とする地震が発生しました。最大震度は5強、マグニチュードは7.4です。';
+      }
+
+      state.events.unshift(simEvent);
+      state.selectedId = simEvent.id;
+      state.simState = { event: simEvent, startTime: performance.now(), elapsedSec: 0 };
+
+      const banner = document.getElementById('activeAlertBanner');
+      banner.classList.remove('hidden');
+      document.getElementById('bannerTag').textContent = bannerTag;
+      document.getElementById('bannerTitle').textContent = `震源地: ${simEvent.epicenter}（最大震度 ${simEvent.shindoLabel}）`;
+
+      speakYukari(speechMsg, soundKind);
+      if (state.config.use_text) {
+        showToast(bannerTag, `${simEvent.epicenter} / 最大震度 ${simEvent.shindoLabel}`, 'danger');
+      }
+
+      renderAll();
+
+      state.simTimer = setInterval(() => {
+        if (!state.simState) return;
+        state.simState.elapsedSec = (performance.now() - state.simState.startTime) / 1000;
+        const pKm = Math.round(state.simState.elapsedSec * 7.0);
+        const sKm = Math.round(state.simState.elapsedSec * 4.0);
+        document.getElementById('bannerSub').textContent =
+          `経過: ${state.simState.elapsedSec.toFixed(1)}秒 | P波到達半径: ${pKm} km / S波到達半径: ${sKm} km`;
+        renderWavefronts();
+        renderDetailPanel();
+
+        if (state.simState.elapsedSec >= 90) {
+          stopSimulation();
+        }
+      }, 100);
+    }
+
+    function stopSimulation() {
+      if (state.simTimer) {
+        clearInterval(state.simTimer);
+        state.simTimer = null;
+      }
+      state.simState = null;
+      document.getElementById('activeAlertBanner').classList.add('hidden');
+      renderWavefronts();
+    }
+
+    // =========================================================================
+    // Rendering Functions
+    // =========================================================================
+    function getFilteredEvents() {
+      return state.events.filter(ev => {
+        if (ev.id.startsWith('sim-')) return true;
+        if (state.config.ignore_unknown && ev.maxShindo === 0) return false;
+        if (ev.maxShindo > 0 && ev.maxShindo < state.config.min_shindo) return false;
+        if (ev.type === 'nied' && !state.config.use_nied) return false;
+        if (ev.type === 'nhk' && !state.config.use_nhk) return false;
+        if (ev.type === 'tsunami' && !state.config.use_tsunami) return false;
+        return true;
+      });
+    }
+
+    function selectEvent(id) {
+      state.selectedId = id;
+      renderAll();
+    }
+
+    function renderFeed() {
+      const panel = document.getElementById('panelFeed');
+      const filtered = getFilteredEvents();
+      document.getElementById('feedCountBadge').textContent = filtered.length;
+      document.getElementById('activeMinShindoLabel').textContent = `震度${state.config.min_shindo}`;
+
+      if (filtered.length === 0) {
+        panel.innerHTML = `
+          <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-6 text-center text-xs text-slate-400">
+            現在のフィルタ条件（最小震度 ${state.config.min_shindo}）に一致する地震情報はありません。<br/>
+            右上の「設定」から最小震度を下げるか、「速報テスト」をお試しください。
+          </div>`;
+        return;
+      }
+
+      panel.innerHTML = filtered.map(ev => {
+        const col = shindoColor(ev.maxShindo);
+        const isSelected = ev.id === state.selectedId;
+        const typeLabel = ev.type === 'nied' ? 'NIED 緊急地震速報' : ev.type === 'tsunami' ? '津波警報' : '地震情報';
+        return `
+          <button data-event-id="${escapeHtml(ev.id)}" class="feed-card w-full text-left rounded-xl border ${isSelected ? 'border-purple-500 bg-slate-800/80 shadow-md' : 'border-slate-800 bg-slate-950/70 hover:bg-slate-900'} p-3 transition flex gap-3 items-start">
+            <div class="w-1.5 self-stretch rounded-full shrink-0" style="background-color: ${col.hex}"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">${escapeHtml(typeLabel)}</span>
+                <span class="text-[11px] font-mono text-slate-400">${escapeHtml(ev.time)}</span>
+              </div>
+              <div class="flex items-center justify-between gap-2 mt-1">
+                <div class="text-sm font-bold text-white truncate">${escapeHtml(ev.epicenter)}</div>
+                <span class="px-2 py-0.5 rounded-md text-xs font-bold shrink-0 ${col.bg} ${col.text}">震度 ${escapeHtml(ev.shindoLabel)}</span>
+              </div>
+              <div class="text-[11px] text-slate-300 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                <span>M${escapeHtml(ev.magnitude)}</span>
+                <span>深さ ${escapeHtml(ev.depth)}</span>
+                <span class="text-slate-400 truncate">${escapeHtml(ev.tsunami)}</span>
+              </div>
+            </div>
+          </button>`;
+      }).join('');
+
+      panel.querySelectorAll('.feed-card').forEach(btn => {
+        btn.addEventListener('click', () => selectEvent(btn.getAttribute('data-event-id')));
+      });
+    }
+
+    function renderDetailPanel() {
+      const ev = state.events.find(e => e.id === state.selectedId) || state.events[0];
+      if (!ev) return;
+
+      const col = shindoColor(ev.maxShindo);
+      document.getElementById('detEpicenter').textContent = ev.epicenter;
+      const shindoEl = document.getElementById('detShindo');
+      shindoEl.textContent = `震度 ${ev.shindoLabel}`;
+      shindoEl.className = `text-sm font-bold mt-0.5 ${ev.maxShindo >= 5 ? 'text-red-400' : ev.maxShindo >= 3 ? 'text-amber-400' : 'text-slate-200'}`;
+      document.getElementById('detMagDepth').textContent = `M${ev.magnitude} / ${ev.depth}`;
+      document.getElementById('detTsunami').textContent = ev.tsunami;
+
+      // Floating map overlay
+      document.getElementById('overlayEpicenter').textContent = `${ev.epicenter}（震度${ev.shindoLabel}）`;
+      document.getElementById('overlayMeta').innerHTML = `
+        <div>時刻: ${escapeHtml(ev.time)}</div>
+        <div>規模: M${escapeHtml(ev.magnitude)} / 深さ: ${escapeHtml(ev.depth)}</div>
+      `;
+
+      // City arrival grid
+      const cityGrid = document.getElementById('cityArrivalGrid');
+      if (ev.lat == null || ev.lng == null) {
+        cityGrid.innerHTML = '<div class="col-span-6 text-xs text-slate-500 py-1">震源座標データなし</div>';
+        return;
+      }
+
+      const elapsed = state.simState && state.simState.event.id === ev.id ? state.simState.elapsedSec : 0;
+      cityGrid.innerHTML = MAJOR_CITIES.map(city => {
+        const dist = haversineKm(ev.lat, ev.lng, city.lat, city.lng);
+        const sTotalSec = dist / 4.0;
+        const remaining = Math.max(0, Math.round(sTotalSec - elapsed));
+        const arrived = elapsed > 0 && remaining === 0;
+        return `
+          <div class="rounded-lg bg-slate-950/70 border ${arrived ? 'border-red-500/60' : 'border-slate-800'} p-2">
+            <div class="text-[11px] font-semibold text-slate-300">${city.name}</div>
+            <div class="text-[10px] text-slate-500">${Math.round(dist)} km</div>
+            <div class="text-xs font-mono font-bold mt-0.5 ${arrived ? 'text-red-400' : 'text-cyan-300'}">
+              ${arrived ? '到達' : `約${remaining}秒`}
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    function renderTtsLogs() {
+      document.getElementById('ttsCountBadge').textContent = state.ttsLogs.length;
+      const list = document.getElementById('ttsLogList');
+      if (state.ttsLogs.length === 0) {
+        list.innerHTML = '<div class="text-xs text-slate-500 text-center py-6">まだ読み上げ履歴はありません。</div>';
+        return;
+      }
+      list.innerHTML = state.ttsLogs.map(log => `
+        <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5 text-xs">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 mb-1">
+            <span>${escapeHtml(log.time)}</span>
+            <span class="${log.spoken ? 'text-purple-400' : 'text-slate-500'}">${log.spoken ? '音声再生済み' : 'テキストのみ'}</span>
+          </div>
+          <div class="text-slate-200 leading-relaxed">${escapeHtml(log.text)}</div>
+        </div>
+      `).join('');
+    }
+
+    function updateMuteUI() {
+      const btn = document.getElementById('btnMuteToggle');
+      const label = document.getElementById('labelMute');
+      const icon = document.getElementById('iconMute');
+      if (state.config.muted) {
+        label.textContent = 'ミュート中';
+        icon.setAttribute('data-lucide', 'volume-x');
+        icon.className = 'w-3.5 h-3.5 text-slate-400';
+      } else {
+        label.textContent = '音声ON';
+        icon.setAttribute('data-lucide', 'volume-2');
+        icon.className = 'w-3.5 h-3.5 text-purple-400';
+      }
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function renderAll() {
+      renderFeed();
+      renderDetailPanel();
+      renderMapMarkers();
+      renderWavefronts();
+      updateMuteUI();
+    }
+
+    // =========================================================================
+    // Command Console (%y) Handler
+    // =========================================================================
+    function handleCommand(raw) {
+      const out = document.getElementById('cmdOutput');
+      out.classList.remove('hidden');
+      const cmd = raw.trim();
+      const parts = cmd.split(/\s+/);
+      if (parts[0] !== '%y') {
+        out.textContent = 'エラー: コマンドは "%y" で始めてください（例: %y help）';
+        return;
+      }
+      const sub = (parts[1] || '').toLowerCase();
+      if (sub === 'test') {
+        out.textContent = '✅ テスト音声・通知を実行しました。';
+        speakYukari('結月ゆかり地震・津波モニター、テスト音声の再生に成功しました。', 'test');
+        showToast('テスト通知 (%y test)', 'テキスト・音声テストを実行しました。', 'success');
+      } else if (sub === 'eew') {
+        out.textContent = '🚨 緊急地震速報シミュレーションを開始しました。';
+        startSimulation('eew');
+      } else if (sub === 'tsunami') {
+        out.textContent = '🌊 津波警報シミュレーションを開始しました。';
+        startSimulation('tsunami');
+      } else if (sub === 'status') {
+        out.textContent = `稼働状態: ${state.dataMode.toUpperCase()} | min_shindo=${state.config.min_shindo} | use_nied=${state.config.use_nied} | use_nhk=${state.config.use_nhk} | use_tsunami=${state.config.use_tsunami} | use_voice=${state.config.use_voice}`;
+      } else if (sub === 'config') {
+        const key = parts[2];
+        const val = parts[3];
+        if (!key || val === undefined) {
+          out.textContent = '使い方: %y config <key> <value>（例: %y config min_shindo 4）';
+          return;
+        }
+        if (key === 'min_shindo') {
+          const n = Math.min(7, Math.max(1, parseInt(val, 10) || 3));
+          state.config.min_shindo = n;
+          saveConfig();
+          renderAll();
+          out.textContent = `✅ min_shindo を ${n} に更新しました。`;
+        } else if (key in state.config && typeof state.config[key] === 'boolean') {
+          state.config[key] = (val === 'true' || val === '1' || val === 'on');
+          saveConfig();
+          renderAll();
+          out.textContent = `✅ ${key} を ${state.config[key]} に更新しました。`;
+        } else {
+          out.textContent = `❌ 不明な設定キー: ${key}`;
+        }
+      } else {
+        out.textContent = '利用可能なコマンド:\n  %y test — 音声・通知テスト\n  %y eew — 緊急地震速報シミュレーション\n  %y tsunami — 津波警報シミュレーション\n  %y config <key> <value> — 設定変更\n  %y status — 現在の状態を表示';
+      }
+    }
+
+    // =========================================================================
+    // Polling Loop & Event Listeners
+    // =========================================================================
+    function startPollingLoop() {
+      if (state.pollTimer) clearInterval(state.pollTimer);
+      state.countdown = state.config.poll_interval;
+      const cdEl = document.getElementById('pollCountdown');
+
+      state.pollTimer = setInterval(() => {
+        if (state.config.poll_interval === 0) {
+          cdEl.textContent = '手動';
+          return;
+        }
+        state.countdown -= 1;
+        if (state.countdown <= 0) {
+          state.countdown = state.config.poll_interval;
+          fetchLiveEarthquakes(false);
+        }
+        cdEl.textContent = `${state.countdown}s`;
+      }, 1000);
+    }
+
+    function openSettingsModal() {
+      document.getElementById('cfgUseNied').checked = state.config.use_nied;
+      document.getElementById('cfgUseNhk').checked = state.config.use_nhk;
+      document.getElementById('cfgUseTsunami').checked = state.config.use_tsunami;
+      document.getElementById('cfgMinShindo').value = state.config.min_shindo;
+      document.getElementById('cfgMinShindoVal').textContent = `震度${state.config.min_shindo}`;
+      document.getElementById('cfgIgnoreUnknown').checked = state.config.ignore_unknown;
+      document.getElementById('cfgPollInterval').value = String(state.config.poll_interval);
+      document.getElementById('cfgUseText').checked = state.config.use_text;
+      document.getElementById('cfgUseVoice').checked = state.config.use_voice;
+      document.getElementById('cfgVoicePitch').value = state.config.voice_pitch;
+      document.getElementById('cfgPitchVal').textContent = state.config.voice_pitch.toFixed(2);
+      document.getElementById('cfgVoiceRate').value = state.config.voice_rate;
+      document.getElementById('cfgRateVal').textContent = state.config.voice_rate.toFixed(2);
+
+      const m = document.getElementById('settingsModal');
+      m.classList.remove('hidden');
+      m.classList.add('flex');
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide) lucide.createIcons();
+
+      initMap();
+      renderAll();
+      fetchLiveEarthquakes(false);
+      startPollingLoop();
+
+      // Header buttons
+      document.getElementById('btnPollNow').addEventListener('click', () => {
+        state.countdown = state.config.poll_interval || 30;
+        fetchLiveEarthquakes(true);
+      });
+
+      document.getElementById('btnMuteToggle').addEventListener('click', () => {
+        state.config.muted = !state.config.muted;
+        if (state.config.muted && 'speechSynthesis' in window) {
+          try { window.speechSynthesis.cancel(); } catch (e) {}
+        } else {
+          ensureAudioCtx();
+        }
+        saveConfig();
+        updateMuteUI();
+      });
+
+      // Simulation Modal
+      const simModal = document.getElementById('simModal');
+      document.getElementById('btnSimMenu').addEventListener('click', () => {
+        simModal.classList.remove('hidden');
+        simModal.classList.add('flex');
+      });
+      document.getElementById('btnCloseSimModal').addEventListener('click', () => {
+        simModal.classList.add('hidden');
+        simModal.classList.remove('flex');
+      });
+      document.getElementById('btnSimEew').addEventListener('click', () => {
+        simModal.classList.add('hidden');
+        simModal.classList.remove('flex');
+        startSimulation('eew');
+      });
+      document.getElementById('btnSimNhk').addEventListener('click', () => {
+        simModal.classList.add('hidden');
+        simModal.classList.remove('flex');
+        startSimulation('nhk');
+      });
+      document.getElementById('btnSimTsunami').addEventListener('click', () => {
+        simModal.classList.add('hidden');
+        simModal.classList.remove('flex');
+        startSimulation('tsunami');
+      });
+      document.getElementById('btnStopSim').addEventListener('click', stopSimulation);
+
+      // Settings Modal
+      const settingsModal = document.getElementById('settingsModal');
+      document.getElementById('btnOpenSettings').addEventListener('click', openSettingsModal);
+      document.getElementById('btnCloseSettings').addEventListener('click', () => {
+        settingsModal.classList.add('hidden');
+        settingsModal.classList.remove('flex');
+      });
+      document.getElementById('cfgMinShindo').addEventListener('input', e => {
+        document.getElementById('cfgMinShindoVal').textContent = `震度${e.target.value}`;
+      });
+      document.getElementById('cfgVoicePitch').addEventListener('input', e => {
+        document.getElementById('cfgPitchVal').textContent = Number(e.target.value).toFixed(2);
+      });
+      document.getElementById('cfgVoiceRate').addEventListener('input', e => {
+        document.getElementById('cfgRateVal').textContent = Number(e.target.value).toFixed(2);
+      });
+      document.getElementById('btnResetSettings').addEventListener('click', () => {
+        state.config = { ...DEFAULT_CONFIG };
+        saveConfig();
+        openSettingsModal();
+        renderAll();
+        showToast('設定リセット', '初期設定に戻しました。', 'info');
+      });
+      document.getElementById('btnSaveSettings').addEventListener('click', () => {
+        state.config.use_nied = document.getElementById('cfgUseNied').checked;
+        state.config.use_nhk = document.getElementById('cfgUseNhk').checked;
+        state.config.use_tsunami = document.getElementById('cfgUseTsunami').checked;
+        state.config.min_shindo = parseInt(document.getElementById('cfgMinShindo').value, 10);
+        state.config.ignore_unknown = document.getElementById('cfgIgnoreUnknown').checked;
+        state.config.poll_interval = parseInt(document.getElementById('cfgPollInterval').value, 10);
+        state.config.use_text = document.getElementById('cfgUseText').checked;
+        state.config.use_voice = document.getElementById('cfgUseVoice').checked;
+        state.config.voice_pitch = parseFloat(document.getElementById('cfgVoicePitch').value);
+        state.config.voice_rate = parseFloat(document.getElementById('cfgVoiceRate').value);
+        saveConfig();
+        startPollingLoop();
+        renderAll();
+        settingsModal.classList.add('hidden');
+        settingsModal.classList.remove('flex');
+        showToast('設定保存', '通知設定を更新しました。', 'success');
+      });
+
+      // Map Zoom controls
+      document.getElementById('btnZoomIn').addEventListener('click', () => {
+        if (mapSvg && zoomBehavior) mapSvg.transition().duration(250).call(zoomBehavior.scaleBy, 1.4);
+      });
+      document.getElementById('btnZoomOut').addEventListener('click', () => {
+        if (mapSvg && zoomBehavior) mapSvg.transition().duration(250).call(zoomBehavior.scaleBy, 0.7);
+      });
+      document.getElementById('btnZoomReset').addEventListener('click', () => {
+        if (mapSvg && zoomBehavior) mapSvg.transition().duration(300).call(zoomBehavior.transform, d3.zoomIdentity);
+      });
+
+      // Tabs
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.tab-btn').forEach(b => {
+            b.classList.remove('border-purple-500', 'text-white');
+            b.classList.add('border-transparent', 'text-slate-400');
+          });
+          btn.classList.add('border-purple-500', 'text-white');
+          btn.classList.remove('border-transparent', 'text-slate-400');
+          const tab = btn.getAttribute('data-tab');
+          document.getElementById('panelFeed').classList.toggle('hidden', tab !== 'feed');
+          document.getElementById('panelTts').classList.toggle('hidden', tab !== 'tts');
+        });
+      });
+
+      // Speak Selected & Test Voice
+      document.getElementById('btnSpeakSelected').addEventListener('click', () => {
+        ensureAudioCtx();
+        const ev = state.events.find(e => e.id === state.selectedId);
+        if (!ev) return;
+        speakYukari(
+          `${ev.epicenter}の地震情報です。最大震度は${ev.shindoLabel}、マグニチュードは${ev.magnitude}、深さは${ev.depth}です。${ev.tsunami}。`,
+          'nhk'
+        );
+      });
+      document.getElementById('btnTestVoicePanel').addEventListener('click', () => {
+        ensureAudioCtx();
+        speakYukari('結月ゆかり地震・津波モニター、音声テストです。', 'test');
+      });
+
+      // Command form
+      document.getElementById('cmdForm').addEventListener('submit', e => {
+        e.preventDefault();
+        const input = document.getElementById('cmdInput');
+        if (!input.value.trim()) return;
+        handleCommand(input.value);
+        input.value = '';
+      });
+    });
+  </script>
+</body>
+</html>
